@@ -1,7 +1,7 @@
-name: RSS to Bluesky Pro
+name: RSS to Bluesky Pro (Cleaned)
 on:
   schedule:
-    - cron: '*/10 * * * *' # Every 10 minutes
+    - cron: '*/10 * * * *'
   workflow_dispatch:
 
 jobs:
@@ -9,15 +9,15 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6 # Updated to v6 for Node 24
+        uses: actions/checkout@v4 # Reverting to stable v4 to ensure absolute compatibility
 
       - name: Set up Python
-        uses: actions/setup-python@v6 # Updated to v6 for Node 24
+        uses: actions/setup-python@v5
         with:
           python-version: '3.12'
 
       - name: Install dependencies
-        run: pip install atproto feedparser beautifulsoup4 requests
+        run: pip install atproto feedparser beautifulsoup4 requests lxml
 
       - name: Run Bot
         env:
@@ -26,14 +26,14 @@ jobs:
           RSS_URL: 'https://www.theguardian.com/uk/media/rss'
         run: |
           python - <<EOF
-          import os, feedparser, requests
+          import os, feedparser, requests, re
           from atproto import Client, models, client_utils
           from bs4 import BeautifulSoup
 
           client = Client()
           client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
           
-          # 1. Peek at your last Bluesky post to avoid duplicates
+          # 1. Check for duplicates
           profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
           last_link_on_bsky = ""
           if profile_feed.feed:
@@ -41,28 +41,47 @@ jobs:
               if last_post.embed and hasattr(last_post.embed, 'external'):
                   last_link_on_bsky = last_post.embed.external.uri
 
-          # 2. Check RSS Feed
+          # 2. Parse RSS
           feed = feedparser.parse(os.environ['RSS_URL'])
+          if not feed.entries:
+              exit()
           entry = feed.entries[0]
 
           if entry.link == last_link_on_bsky:
-              print(f"Skipping: {entry.title} - already posted.")
+              print("No new articles to post.")
           else:
-              print(f"New article found: {entry.title}")
-              
-              # 3. Clean up the description (remove <p> tags etc)
+              # 3. ADVANCED CLEANING logic
               raw_desc = entry.get('summary', entry.get('description', ''))
-              clean_desc = BeautifulSoup(raw_desc, 'html.parser').get_text()[:150]
+              
+              # Strip HTML and "Continue reading..." boilerplate
+              soup = BeautifulSoup(raw_desc, 'html.parser')
+              for a in soup.find_all('a'): a.decompose() # Remove "Continue reading" links
+              clean_text = soup.get_text(separator=' ').strip()
+              
+              # Remove any leftover weird spacing or double-newlines
+              clean_text = re.sub(r'\s+', ' ', clean_text)
+              
+              # 4. TRUNCATE at a full sentence (max 300 chars)
+              # This ensures we don't cut off mid-word or mid-sentence if possible
+              max_len = 300
+              if len(clean_text) > max_len:
+                  truncated = clean_text[:max_len]
+                  last_period = truncated.rfind('.')
+                  if last_period > 150: # Only cut at period if it gives enough context
+                      clean_desc = truncated[:last_period + 1]
+                  else:
+                      clean_desc = truncated.rsplit(' ', 1)[0] + '...'
+              else:
+                  clean_desc = clean_text
 
-              # 4. Scrape image
-              image_url, embed = None, None
+              # 5. Scrape Image & Post
+              embed = None
               try:
                   page = requests.get(entry.link, timeout=10)
-                  soup = BeautifulSoup(page.content, 'html.parser')
-                  og_image = soup.find("meta", property="og:image")
+                  soup_page = BeautifulSoup(page.content, 'html.parser')
+                  og_image = soup_page.find("meta", property="og:image")
                   if og_image:
-                      image_url = og_image["content"]
-                      img_data = requests.get(image_url).content
+                      img_data = requests.get(og_image["content"]).content
                       upload = client.upload_blob(img_data)
                       embed = models.AppBskyEmbedExternal.Main(
                           external=models.AppBskyEmbedExternal.External(
@@ -73,14 +92,13 @@ jobs:
                           )
                       )
               except Exception as e:
-                  print(f"Image scrape failed: {e}")
+                  print(f"Image failed: {e}")
 
-              # 5. Build Clickable Post
-              # This makes the link blue and interactive in the post body
+              # Build clickable text
               tb = client_utils.TextBuilder()
               tb.text(f"{entry.title}\n\n")
-              tb.link(entry.link, entry.link)
+              tb.link("Read more on The Guardian", entry.link)
 
               client.send_post(tb, embed=embed)
-              print("Post successful!")
+              print(f"Successfully posted: {entry.title}")
           EOF
