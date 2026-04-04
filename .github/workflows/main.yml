@@ -4,19 +4,15 @@ on:
     - cron: '*/10 * * * *' # Every 10 minutes
   workflow_dispatch:
 
-# Pre-emptive fix for Node.js 20 deprecation warnings
-env:
-  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
-
 jobs:
   post-news:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4 # 'FORCE' flag above handles the Node version
+        uses: actions/checkout@v5
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6
         with:
           python-version: '3.13'
 
@@ -87,7 +83,6 @@ jobs:
                   print(f"Image scrape failed: {e}")
 
               # 5. The "Sleek" Post (Headline only, no text link)
-              # The Link Card (embed) provides the clickable navigation
               client.send_post(text=entry.title, embed=embed)
               print(f"Successfully posted: {entry.title}")
           EOF
