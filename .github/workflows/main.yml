@@ -1,7 +1,7 @@
-name: RSS to Bluesky Pro (Editor Edition)
+name: RSS to Bluesky Pro (Final Cleaned)
 on:
   schedule:
-    - cron: '*/10 * * * *'
+    - cron: '*/10 * * * *' # Every 10 minutes
   workflow_dispatch:
 
 jobs:
@@ -9,12 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4 # Stable version
+        uses: actions/checkout@v6 # Updated to v6 to clear Node warnings
 
       - name: Set up Python
-        uses: actions/setup-python@v5 # Stable version
+        uses: actions/setup-python@v6 # Updated to v6 to clear Node warnings
         with:
-          python-version: '3.12'
+          python-version: '3.13' # Using latest 2026 Python stable
 
       - name: Install dependencies
         run: pip install atproto feedparser beautifulsoup4 requests lxml
@@ -26,14 +26,14 @@ jobs:
           RSS_URL: 'https://www.theguardian.com/uk/media/rss'
         run: |
           python - <<EOF
-          import os, feedparser, requests
+          import os, feedparser, requests, re
           from atproto import Client, models, client_utils
           from bs4 import BeautifulSoup
 
           client = Client()
           client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
           
-          # 1. Deduplication
+          # 1. Deduplication: Peek at last post
           profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
           last_link_on_bsky = ""
           if profile_feed.feed:
@@ -47,21 +47,24 @@ jobs:
           entry = feed.entries[0]
 
           if entry.link == last_link_on_bsky:
-              print("No new articles. Stand down.")
+              print("No new content found. Stand down.")
           else:
-              # 3. Targeted Extraction (First <p> tag only)
+              # 3. Targeted Extraction (Captures only the first <p> tag text)
               raw_desc = entry.get('summary', entry.get('description', ''))
               soup = BeautifulSoup(raw_desc, 'html.parser')
               
+              # Find the first paragraph
               first_p = soup.find('p')
               if first_p:
-                  # Clean only the first paragraph
                   clean_desc = first_p.get_text(strip=True)
               else:
-                  # Fallback if the RSS structure changes
-                  clean_desc = soup.get_text(strip=True)[:150]
+                  # Robust fallback
+                  clean_desc = soup.get_text(separator=' ').strip().split('\n')[0][:200]
+              
+              # Scrub extra whitespace
+              clean_desc = re.sub(r'\s+', ' ', clean_desc)
 
-              # 4. Scrape Image
+              # 4. Scrape Image & Create Link Card
               embed = None
               try:
                   page = requests.get(entry.link, timeout=10)
@@ -79,9 +82,9 @@ jobs:
                           )
                       )
               except Exception as e:
-                  print(f"Image error: {e}")
+                  print(f"Image scrape failed: {e}")
 
-              # 5. Final Post Construction
+              # 5. Post Construction with shorter link text
               tb = client_utils.TextBuilder()
               tb.text(f"{entry.title}\n\n")
               tb.link("More on The Guardian", entry.link)
