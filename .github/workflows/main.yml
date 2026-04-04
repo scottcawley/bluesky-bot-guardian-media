@@ -1,18 +1,18 @@
-name: RSS to Bluesky Pro (Cleaned)
+name: RSS to Bluesky Pro (Final)
 on:
   schedule:
-    - cron: '*/10 * * * *'
-  workflow_dispatch:
+    - cron: '*/10 * * * *' # Every 10 minutes
+  workflow_dispatch:     # For your manual testing
 
 jobs:
   post-news:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4 # Reverting to stable v4 to ensure absolute compatibility
+        uses: actions/checkout@v6 # Bumped to v6 for Node 24 support
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6 # Bumped to v6 for Node 24 support
         with:
           python-version: '3.12'
 
@@ -33,7 +33,7 @@ jobs:
           client = Client()
           client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
           
-          # 1. Check for duplicates
+          # 1. Deduplication: Peek at last post
           profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
           last_link_on_bsky = ""
           if profile_feed.feed:
@@ -41,40 +41,35 @@ jobs:
               if last_post.embed and hasattr(last_post.embed, 'external'):
                   last_link_on_bsky = last_post.embed.external.uri
 
-          # 2. Parse RSS
+          # 2. Check RSS
           feed = feedparser.parse(os.environ['RSS_URL'])
-          if not feed.entries:
-              exit()
+          if not feed.entries: exit()
           entry = feed.entries[0]
 
           if entry.link == last_link_on_bsky:
-              print("No new articles to post.")
+              print(f"Skipping: {entry.title} - already on profile.")
           else:
-              # 3. ADVANCED CLEANING logic
+              # 3. Text Scrubbing (Removes <p> tags and cleans up whitespace)
               raw_desc = entry.get('summary', entry.get('description', ''))
-              
-              # Strip HTML and "Continue reading..." boilerplate
               soup = BeautifulSoup(raw_desc, 'html.parser')
-              for a in soup.find_all('a'): a.decompose() # Remove "Continue reading" links
-              clean_text = soup.get_text(separator=' ').strip()
               
-              # Remove any leftover weird spacing or double-newlines
+              # Remove links like "Continue reading"
+              for a in soup.find_all('a'): a.decompose()
+              
+              # Get text and clean up whitespace/newlines
+              clean_text = soup.get_text(separator=' ').strip()
               clean_text = re.sub(r'\s+', ' ', clean_text)
               
-              # 4. TRUNCATE at a full sentence (max 300 chars)
-              # This ensures we don't cut off mid-word or mid-sentence if possible
+              # Smart truncation (Max 300 chars, try to end at a sentence)
               max_len = 300
               if len(clean_text) > max_len:
                   truncated = clean_text[:max_len]
                   last_period = truncated.rfind('.')
-                  if last_period > 150: # Only cut at period if it gives enough context
-                      clean_desc = truncated[:last_period + 1]
-                  else:
-                      clean_desc = truncated.rsplit(' ', 1)[0] + '...'
+                  clean_desc = truncated[:last_period + 1] if last_period > 150 else truncated.rsplit(' ', 1)[0] + '...'
               else:
                   clean_desc = clean_text
 
-              # 5. Scrape Image & Post
+              # 4. Scrape Image & Create Link Card
               embed = None
               try:
                   page = requests.get(entry.link, timeout=10)
@@ -92,13 +87,13 @@ jobs:
                           )
                       )
               except Exception as e:
-                  print(f"Image failed: {e}")
+                  print(f"Image scrape failed: {e}")
 
-              # Build clickable text
+              # 5. Send Post with clickable Blue Link
               tb = client_utils.TextBuilder()
               tb.text(f"{entry.title}\n\n")
               tb.link("Read more on The Guardian", entry.link)
 
               client.send_post(tb, embed=embed)
-              print(f"Successfully posted: {entry.title}")
+              print(f"Posted: {entry.title}")
           EOF
