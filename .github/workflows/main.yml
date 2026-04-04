@@ -1,20 +1,24 @@
-name: RSS to Bluesky Pro (Final Cleaned)
+name: RSS to Bluesky Pro (Sleek Edition)
 on:
   schedule:
     - cron: '*/10 * * * *' # Every 10 minutes
   workflow_dispatch:
+
+# Pre-emptive fix for Node.js 20 deprecation warnings
+env:
+  FORCE_JAVASCRIPT_ACTIONS_TO_NODE24: "true"
 
 jobs:
   post-news:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6 # Updated to v6 to clear Node warnings
+        uses: actions/checkout@v4 # 'FORCE' flag above handles the Node version
 
       - name: Set up Python
-        uses: actions/setup-python@v6 # Updated to v6 to clear Node warnings
+        uses: actions/setup-python@v5
         with:
-          python-version: '3.13' # Using latest 2026 Python stable
+          python-version: '3.13'
 
       - name: Install dependencies
         run: pip install atproto feedparser beautifulsoup4 requests lxml
@@ -41,27 +45,25 @@ jobs:
               if last_post.embed and hasattr(last_post.embed, 'external'):
                   last_link_on_bsky = last_post.embed.external.uri
 
-          # 2. Parse RSS
+          # 2. Check RSS
           feed = feedparser.parse(os.environ['RSS_URL'])
           if not feed.entries: exit()
           entry = feed.entries[0]
 
           if entry.link == last_link_on_bsky:
-              print("No new content found. Stand down.")
+              print("Already posted. Skipping.")
           else:
-              # 3. Targeted Extraction (Captures only the first <p> tag text)
+              # 3. Precision Extraction (First paragraph only)
               raw_desc = entry.get('summary', entry.get('description', ''))
               soup = BeautifulSoup(raw_desc, 'html.parser')
               
-              # Find the first paragraph
               first_p = soup.find('p')
               if first_p:
                   clean_desc = first_p.get_text(strip=True)
               else:
-                  # Robust fallback
-                  clean_desc = soup.get_text(separator=' ').strip().split('\n')[0][:200]
+                  clean_desc = soup.get_text(separator=' ').strip()[:200]
               
-              # Scrub extra whitespace
+              # Clean up any weird spacing
               clean_desc = re.sub(r'\s+', ' ', clean_desc)
 
               # 4. Scrape Image & Create Link Card
@@ -84,11 +86,8 @@ jobs:
               except Exception as e:
                   print(f"Image scrape failed: {e}")
 
-              # 5. Post Construction with shorter link text
-              tb = client_utils.TextBuilder()
-              tb.text(f"{entry.title}\n\n")
-              tb.link("More on The Guardian", entry.link)
-
-              client.send_post(tb, embed=embed)
-              print(f"Success: Posted '{entry.title}'")
+              # 5. The "Sleek" Post (Headline only, no text link)
+              # The Link Card (embed) provides the clickable navigation
+              client.send_post(text=entry.title, embed=embed)
+              print(f"Successfully posted: {entry.title}")
           EOF
