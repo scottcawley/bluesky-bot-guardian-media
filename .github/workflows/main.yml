@@ -1,0 +1,16 @@
+name: RSS to Bluesky
+on:
+  schedule:
+    - cron: '0 * * * *' # Runs every hour. Change '0' to '*/30' for every 30 mins.
+  workflow_dispatch:     # Allows you to test it manually.
+
+jobs:
+  post:
+    runs-on: ubuntu-latest
+    steps:
+      - name: RSS to Bluesky Action
+        uses: miso-belica/bluesky-rss-feed-action@v1
+        with:
+          bluesky_handle: ${{ secrets.BSKY_HANDLE }}
+          bluesky_password: ${{ secrets.BSKY_PASSWORD }}
+          rss_feed_url: 'https://www.theguardian.com/uk/media/rss'
