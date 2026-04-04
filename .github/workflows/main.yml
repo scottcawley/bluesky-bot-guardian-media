@@ -1,16 +1,29 @@
 name: RSS to Bluesky
 on:
   schedule:
-    - cron: '0 * * * *' # Runs every hour. Change '0' to '*/30' for every 30 mins.
-  workflow_dispatch:     # Allows you to test it manually.
+    - cron: '*/30 * * * *' # This checks the feed every 30 minutes
+  workflow_dispatch:     # This lets you run it manually for testing
 
 jobs:
-  post:
+  rss-to-bluesky:
     runs-on: ubuntu-latest
     steps:
-      - name: RSS to Bluesky Action
-        uses: miso-belica/bluesky-rss-feed-action@v1
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # This part gives the bot a "memory" so it doesn't repost old news
+      - name: Restore cache
+        uses: actions/cache@v4
         with:
-          bluesky_handle: ${{ secrets.BSKY_HANDLE }}
-          bluesky_password: ${{ secrets.BSKY_PASSWORD }}
-          rss_feed_url: 'https://www.theguardian.com/uk/media/rss'
+          path: .cache
+          key: bsky-rss-cache-${{ github.run_id }}
+          restore-keys: |
+            bsky-rss-cache-
+
+      - name: Post to Bluesky
+        uses: joschi/blueskyfeedbot@v0.0.6
+        with:
+          rss-url: 'https://www.theguardian.com/uk/media/rss'
+          bluesky-handle: ${{ secrets.BSKY_HANDLE }}
+          bluesky-password: ${{ secrets.BSKY_PASSWORD }}
+          cache-dir: .cache
