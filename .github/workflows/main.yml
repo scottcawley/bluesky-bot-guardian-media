@@ -1,7 +1,7 @@
-name: RSS to Bluesky Rich Previews
+name: RSS to Bluesky Pro
 on:
   schedule:
-    - cron: '*/30 * * * *'
+    - cron: '*/10 * * * *' # Every 10 minutes
   workflow_dispatch:
 
 jobs:
@@ -9,12 +9,12 @@ jobs:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v4
+        uses: actions/checkout@v6 # Updated to v6 for Node 24
 
       - name: Set up Python
-        uses: actions/setup-python@v5
+        uses: actions/setup-python@v6 # Updated to v6 for Node 24
         with:
-          python-version: '3.10'
+          python-version: '3.12'
 
       - name: Install dependencies
         run: pip install atproto feedparser beautifulsoup4 requests
@@ -27,44 +27,60 @@ jobs:
         run: |
           python - <<EOF
           import os, feedparser, requests
-          from atproto import Client, models
+          from atproto import Client, models, client_utils
           from bs4 import BeautifulSoup
 
-          # Setup
           client = Client()
           client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
+          
+          # 1. Peek at your last Bluesky post to avoid duplicates
+          profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
+          last_link_on_bsky = ""
+          if profile_feed.feed:
+              last_post = profile_feed.feed[0].post
+              if last_post.embed and hasattr(last_post.embed, 'external'):
+                  last_link_on_bsky = last_post.embed.external.uri
+
+          # 2. Check RSS Feed
           feed = feedparser.parse(os.environ['RSS_URL'])
-
-          # We'll just process the latest entry for now
           entry = feed.entries[0]
-          
-          # Try to find an image (OpenGraph)
-          image_url = None
-          try:
-              page = requests.get(entry.link)
-              soup = BeautifulSoup(page.content, 'html.parser')
-              og_image = soup.find("meta", property="og:image")
-              if og_image:
-                  image_url = og_image["content"]
-          except:
-              pass
 
-          # Create the post with a Link Card (Embed)
-          print(f"Posting: {entry.title}")
-          
-          # This is the "Rich Preview" magic
-          embed = None
-          if image_url:
-              img_data = requests.get(image_url).content
-              upload = client.upload_blob(img_data)
-              embed = models.AppBskyEmbedExternal.Main(
-                  external=models.AppBskyEmbedExternal.External(
-                      title=entry.title,
-                      description=entry.get('description', '')[:100],
-                      uri=entry.link,
-                      thumb=upload.blob
-                  )
-              )
+          if entry.link == last_link_on_bsky:
+              print(f"Skipping: {entry.title} - already posted.")
+          else:
+              print(f"New article found: {entry.title}")
+              
+              # 3. Clean up the description (remove <p> tags etc)
+              raw_desc = entry.get('summary', entry.get('description', ''))
+              clean_desc = BeautifulSoup(raw_desc, 'html.parser').get_text()[:150]
 
-          client.send_post(text=f"{entry.title}\n\n{entry.link}", embed=embed)
+              # 4. Scrape image
+              image_url, embed = None, None
+              try:
+                  page = requests.get(entry.link, timeout=10)
+                  soup = BeautifulSoup(page.content, 'html.parser')
+                  og_image = soup.find("meta", property="og:image")
+                  if og_image:
+                      image_url = og_image["content"]
+                      img_data = requests.get(image_url).content
+                      upload = client.upload_blob(img_data)
+                      embed = models.AppBskyEmbedExternal.Main(
+                          external=models.AppBskyEmbedExternal.External(
+                              title=entry.title,
+                              description=clean_desc,
+                              uri=entry.link,
+                              thumb=upload.blob
+                          )
+                      )
+              except Exception as e:
+                  print(f"Image scrape failed: {e}")
+
+              # 5. Build Clickable Post
+              # This makes the link blue and interactive in the post body
+              tb = client_utils.TextBuilder()
+              tb.text(f"{entry.title}\n\n")
+              tb.link(entry.link, entry.link)
+
+              client.send_post(tb, embed=embed)
+              print("Post successful!")
           EOF
