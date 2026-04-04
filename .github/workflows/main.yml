@@ -1,20 +1,70 @@
-name: RSS to Bluesky (Rich Preview)
+name: RSS to Bluesky Rich Previews
 on:
   schedule:
     - cron: '*/30 * * * *'
   workflow_dispatch:
 
 jobs:
-  post_to_bluesky:
+  post-news:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
         uses: actions/checkout@v4
 
-      - name: Post to Bluesky
-        # Note the name change here! No "-action" at the end.
-        uses: miso-belica/bluesky-rss-feed@v1
+      - name: Set up Python
+        uses: actions/setup-python@v5
         with:
-          bluesky_handle: ${{ secrets.BSKY_HANDLE }}
-          bluesky_password: ${{ secrets.BSKY_PASSWORD }}
-          rss_feed_url: 'https://www.theguardian.com/uk/media/rss'
+          python-version: '3.10'
+
+      - name: Install dependencies
+        run: pip install atproto feedparser beautifulsoup4 requests
+
+      - name: Run Bot
+        env:
+          BSKY_HANDLE: ${{ secrets.BSKY_HANDLE }}
+          BSKY_PASSWORD: ${{ secrets.BSKY_PASSWORD }}
+          RSS_URL: 'https://www.theguardian.com/uk/media/rss'
+        run: |
+          python - <<EOF
+          import os, feedparser, requests
+          from atproto import Client, models
+          from bs4 import BeautifulSoup
+
+          # Setup
+          client = Client()
+          client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
+          feed = feedparser.parse(os.environ['RSS_URL'])
+
+          # We'll just process the latest entry for now
+          entry = feed.entries[0]
+          
+          # Try to find an image (OpenGraph)
+          image_url = None
+          try:
+              page = requests.get(entry.link)
+              soup = BeautifulSoup(page.content, 'html.parser')
+              og_image = soup.find("meta", property="og:image")
+              if og_image:
+                  image_url = og_image["content"]
+          except:
+              pass
+
+          # Create the post with a Link Card (Embed)
+          print(f"Posting: {entry.title}")
+          
+          # This is the "Rich Preview" magic
+          embed = None
+          if image_url:
+              img_data = requests.get(image_url).content
+              upload = client.upload_blob(img_data)
+              embed = models.AppBskyEmbedExternal.Main(
+                  external=models.AppBskyEmbedExternal.External(
+                      title=entry.title,
+                      description=entry.get('description', '')[:100],
+                      uri=entry.link,
+                      thumb=upload.blob
+                  )
+              )
+
+          client.send_post(text=f"{entry.title}\n\n{entry.link}", embed=embed)
+          EOF
