@@ -1,18 +1,18 @@
-name: RSS to Bluesky Pro (Final)
+name: RSS to Bluesky Pro (Editor Edition)
 on:
   schedule:
-    - cron: '*/10 * * * *' # Every 10 minutes
-  workflow_dispatch:     # For your manual testing
+    - cron: '*/10 * * * *'
+  workflow_dispatch:
 
 jobs:
   post-news:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v6 # Bumped to v6 for Node 24 support
+        uses: actions/checkout@v4 # Stable version
 
       - name: Set up Python
-        uses: actions/setup-python@v6 # Bumped to v6 for Node 24 support
+        uses: actions/setup-python@v5 # Stable version
         with:
           python-version: '3.12'
 
@@ -26,14 +26,14 @@ jobs:
           RSS_URL: 'https://www.theguardian.com/uk/media/rss'
         run: |
           python - <<EOF
-          import os, feedparser, requests, re
+          import os, feedparser, requests
           from atproto import Client, models, client_utils
           from bs4 import BeautifulSoup
 
           client = Client()
           client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
           
-          # 1. Deduplication: Peek at last post
+          # 1. Deduplication
           profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
           last_link_on_bsky = ""
           if profile_feed.feed:
@@ -41,35 +41,27 @@ jobs:
               if last_post.embed and hasattr(last_post.embed, 'external'):
                   last_link_on_bsky = last_post.embed.external.uri
 
-          # 2. Check RSS
+          # 2. Parse RSS
           feed = feedparser.parse(os.environ['RSS_URL'])
           if not feed.entries: exit()
           entry = feed.entries[0]
 
           if entry.link == last_link_on_bsky:
-              print(f"Skipping: {entry.title} - already on profile.")
+              print("No new articles. Stand down.")
           else:
-              # 3. Text Scrubbing (Removes <p> tags and cleans up whitespace)
+              # 3. Targeted Extraction (First <p> tag only)
               raw_desc = entry.get('summary', entry.get('description', ''))
               soup = BeautifulSoup(raw_desc, 'html.parser')
               
-              # Remove links like "Continue reading"
-              for a in soup.find_all('a'): a.decompose()
-              
-              # Get text and clean up whitespace/newlines
-              clean_text = soup.get_text(separator=' ').strip()
-              clean_text = re.sub(r'\s+', ' ', clean_text)
-              
-              # Smart truncation (Max 300 chars, try to end at a sentence)
-              max_len = 300
-              if len(clean_text) > max_len:
-                  truncated = clean_text[:max_len]
-                  last_period = truncated.rfind('.')
-                  clean_desc = truncated[:last_period + 1] if last_period > 150 else truncated.rsplit(' ', 1)[0] + '...'
+              first_p = soup.find('p')
+              if first_p:
+                  # Clean only the first paragraph
+                  clean_desc = first_p.get_text(strip=True)
               else:
-                  clean_desc = clean_text
+                  # Fallback if the RSS structure changes
+                  clean_desc = soup.get_text(strip=True)[:150]
 
-              # 4. Scrape Image & Create Link Card
+              # 4. Scrape Image
               embed = None
               try:
                   page = requests.get(entry.link, timeout=10)
@@ -87,13 +79,13 @@ jobs:
                           )
                       )
               except Exception as e:
-                  print(f"Image scrape failed: {e}")
+                  print(f"Image error: {e}")
 
-              # 5. Send Post with clickable Blue Link
+              # 5. Final Post Construction
               tb = client_utils.TextBuilder()
               tb.text(f"{entry.title}\n\n")
-              tb.link("Read more on The Guardian", entry.link)
+              tb.link("More on The Guardian", entry.link)
 
               client.send_post(tb, embed=embed)
-              print(f"Posted: {entry.title}")
+              print(f"Success: Posted '{entry.title}'")
           EOF
