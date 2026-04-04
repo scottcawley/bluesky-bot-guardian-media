@@ -1,29 +1,20 @@
-name: RSS to Bluesky
+name: RSS to Bluesky (Rich Preview)
 on:
   schedule:
-    - cron: '*/30 * * * *' # Checks every 30 mins
-  workflow_dispatch:     # Allows manual testing
+    - cron: '*/30 * * * *'
+  workflow_dispatch:
 
 jobs:
-  rss-to-bluesky:
+  post_to_bluesky:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout
-        uses: actions/checkout@v5
-
-      # This gives the bot a memory so it doesn't post the same news twice
-      - name: Restore cache
-        uses: actions/cache@v5
-        with:
-          path: bsky-cache.json
-          key: bsky-rss-cache-${{ github.run_id }}
-          restore-keys: |
-            bsky-rss-cache-
+        uses: actions/checkout@v4
 
       - name: Post to Bluesky
-        uses: joschi/blueskyfeedbot@v0.0.6
+        # Note the name change here! No "-action" at the end.
+        uses: miso-belica/bluesky-rss-feed@v1
         with:
-          rss-feed: 'https://www.theguardian.com/uk/media/rss'
-          username: ${{ secrets.BSKY_HANDLE }}
-          password: ${{ secrets.BSKY_PASSWORD }}
-          cache-file: bsky-cache.json
+          bluesky_handle: ${{ secrets.BSKY_HANDLE }}
+          bluesky_password: ${{ secrets.BSKY_PASSWORD }}
+          rss_feed_url: 'https://www.theguardian.com/uk/media/rss'
