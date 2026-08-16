@@ -8,8 +8,8 @@ jobs:
   post-news:
     runs-on: ubuntu-latest
     strategy:
-      max-parallel: 1 # <--- THIS IS THE MAGIC FIX
-      fail-fast: false # Keeps other bots running if one fails
+      max-parallel: 1
+      fail-fast: false
       matrix:
         include:
           - name: "Guardian Media"
@@ -37,7 +37,7 @@ jobs:
             pass: "BSKY_PASS_ENT_B"
             rss: "https://feeds.bbci.co.uk/news/entertainment_and_arts/rss.xml"
 
-    name: ${{ matrix.name }} # This labels each run in your Actions tab
+    name: ${{ matrix.name }}
     steps:
       - name: Checkout
         uses: actions/checkout@v5
@@ -57,13 +57,23 @@ jobs:
           RSS_URL: ${{ matrix.rss }}
         run: |
           python - <<EOF
-          import os, feedparser, requests, re
+          import os, time, feedparser, requests, re
           from atproto import Client, models, Request
           from bs4 import BeautifulSoup
           from httpx import Timeout
 
           client = Client(request=Request(timeout=Timeout(30.0)))
-          client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
+          
+          # Retry loop to handle Bluesky 502 Upstream failures
+          for attempt in range(3):
+              try:
+                  client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
+                  break
+              except Exception as e:
+                  print(f"Login attempt {attempt + 1} failed: {e}")
+                  if attempt == 2:
+                      raise e
+                  time.sleep(3)
           
           # 1. Deduplication
           profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
