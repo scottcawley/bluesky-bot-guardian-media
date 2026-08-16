@@ -63,64 +63,76 @@ jobs:
           from httpx import Timeout
 
           client = Client(request=Request(timeout=Timeout(30.0)))
-          
-          # Exponential backoff retry loop for Bluesky API glitches
-          for attempt in range(5):
-              try:
-                  client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
-                  break
-              except Exception as e:
-                  wait_time = (2 ** attempt) * 2  # Waits 2s, 4s, 8s, 16s...
-                  print(f"Login attempt {attempt + 1} failed ({e}). Retrying in {wait_time}s...")
-                  if attempt == 4:
-                      print(f"Skipping {os.environ['BSKY_HANDLE']} due to persistent Bluesky 502 server outage.")
-                      sys.exit(0)  # Exits cleanly so GitHub Actions stays green
-                  time.sleep(wait_time)
-          
-          # 1. Deduplication
-          profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
-          last_link_on_bsky = ""
-          if profile_feed.feed:
-              last_post = profile_feed.feed[0].post
-              if last_post.embed and hasattr(last_post.embed, 'external'):
-                  last_link_on_bsky = last_post.embed.external.uri
 
-          # 2. Check RSS
-          feed = feedparser.parse(os.environ['RSS_URL'])
-          if not feed.entries: sys.exit(0)
-          entry = feed.entries[0]
+          try:
+              # Login retry loop
+              for attempt in range(5):
+                  try:
+                      client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
+                      break
+                  except Exception as e:
+                      wait_time = (2 ** attempt) * 2  # Waits 2s, 4s, 8s, 16s...
+                      print(f"Login attempt {attempt + 1} failed ({e}). Retrying in {wait_time}s...")
+                      if attempt == 4:
+                          raise e
+                      time.sleep(wait_time)
+              
+              # 1. Deduplication
+              profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
+              last_link_on_bsky = ""
+              if profile_feed.feed:
+                  last_post = profile_feed.feed[0].post
+                  if last_post.embed and hasattr(last_post.embed, 'external'):
+                      last_link_on_bsky = last_post.embed.external.uri
 
-          if entry.link == last_link_on_bsky:
-              print(f"Skipping {os.environ['BSKY_HANDLE']} - Already posted.")
-          else:
-              # 3. Content Extraction
-              raw_desc = entry.get('summary', entry.get('description', ''))
-              soup = BeautifulSoup(raw_desc, 'html.parser')
-              first_p = soup.find('p')
-              clean_desc = first_p.get_text(strip=True) if first_p else soup.get_text(separator=' ').strip()[:200]
-              clean_desc = re.sub(r'\s+', ' ', clean_desc)
+              # 2. Check RSS
+              feed = feedparser.parse(os.environ['RSS_URL'])
+              if not feed.entries: sys.exit(0)
+              entry = feed.entries[0]
 
-              # 4. Scrape Image
-              embed = None
-              try:
-                  page = requests.get(entry.link, timeout=10)
-                  soup_page = BeautifulSoup(page.content, 'html.parser')
-                  og_image = soup_page.find("meta", property="og:image")
-                  if og_image:
-                      img_data = requests.get(og_image["content"]).content
-                      upload = client.upload_blob(img_data)
-                      embed = models.AppBskyEmbedExternal.Main(
-                          external=models.AppBskyEmbedExternal.External(
-                              title=entry.title,
-                              description=clean_desc,
-                              uri=entry.link,
-                              thumb=upload.blob
+              if entry.link == last_link_on_bsky:
+                  print(f"Skipping {os.environ['BSKY_HANDLE']} - Already posted.")
+              else:
+                  # 3. Content Extraction
+                  raw_desc = entry.get('summary', entry.get('description', ''))
+                  soup = BeautifulSoup(raw_desc, 'html.parser')
+                  first_p = soup.find('p')
+                  clean_desc = first_p.get_text(strip=True) if first_p else soup.get_text(separator=' ').strip()[:200]
+                  clean_desc = re.sub(r'\s+', ' ', clean_desc)
+
+                  # 4. Scrape Image
+                  embed = None
+                  try:
+                      page = requests.get(entry.link, timeout=10)
+                      soup_page = BeautifulSoup(page.content, 'html.parser')
+                      og_image = soup_page.find("meta", property="og:image")
+                      if og_image:
+                          img_data = requests.get(og_image["content"]).content
+                          upload = client.upload_blob(img_data)
+                          embed = models.AppBskyEmbedExternal.Main(
+                              external=models.AppBskyEmbedExternal.External(
+                                  title=entry.title,
+                                  description=clean_desc,
+                                  uri=entry.link,
+                                  thumb=upload.blob
+                              )
                           )
-                      )
-              except Exception as e:
-                  print(f"Image scrape failed: {e}")
+                  except Exception as e:
+                      print(f"Image scrape failed: {e}")
 
-              # 5. Post
-              client.send_post(text=entry.title, embed=embed)
-              print(f"Success for {os.environ['BSKY_HANDLE']}: {entry.title}")
+                  # 5. Post
+                  client.send_post(text=entry.title, embed=embed)
+                  print(f"Success for {os.environ['BSKY_HANDLE']}: {entry.title}")
+
+          except Exception as e:
+              err_msg = str(e)
+              # Catch transient Bluesky server errors specifically
+              transient_errors = ['502', '503', 'NotEnoughResources', 'UpstreamFailure', 'InvokeTimeoutError', 'ReadTimeout']
+              if any(err in err_msg for err in transient_errors):
+                  print(f"Bluesky server glitch detected ({err_msg}). Skipping run cleanly without alerting.")
+                  sys.exit(0)
+              else:
+                  # Real error (e.g. bad password, code error) -> Raise exception to fail job & send email
+                  print(f"Critical error encountered: {err_msg}")
+                  raise e
           EOF
