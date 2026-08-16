@@ -8,6 +8,7 @@ jobs:
   post-news:
     runs-on: ubuntu-latest
     strategy:
+      max-parallel: 1 # <--- THIS IS THE MAGIC FIX
       fail-fast: false # Keeps other bots running if one fails
       matrix:
         include:
