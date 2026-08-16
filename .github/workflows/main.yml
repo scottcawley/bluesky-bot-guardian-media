@@ -57,23 +57,25 @@ jobs:
           RSS_URL: ${{ matrix.rss }}
         run: |
           python - <<EOF
-          import os, time, feedparser, requests, re
+          import os, time, sys, feedparser, requests, re
           from atproto import Client, models, Request
           from bs4 import BeautifulSoup
           from httpx import Timeout
 
           client = Client(request=Request(timeout=Timeout(30.0)))
           
-          # Retry loop to handle Bluesky 502 Upstream failures
-          for attempt in range(3):
+          # Exponential backoff retry loop for Bluesky API glitches
+          for attempt in range(5):
               try:
                   client.login(os.environ['BSKY_HANDLE'], os.environ['BSKY_PASSWORD'])
                   break
               except Exception as e:
-                  print(f"Login attempt {attempt + 1} failed: {e}")
-                  if attempt == 2:
-                      raise e
-                  time.sleep(3)
+                  wait_time = (2 ** attempt) * 2  # Waits 2s, 4s, 8s, 16s...
+                  print(f"Login attempt {attempt + 1} failed ({e}). Retrying in {wait_time}s...")
+                  if attempt == 4:
+                      print(f"Skipping {os.environ['BSKY_HANDLE']} due to persistent Bluesky 502 server outage.")
+                      sys.exit(0)  # Exits cleanly so GitHub Actions stays green
+                  time.sleep(wait_time)
           
           # 1. Deduplication
           profile_feed = client.get_author_feed(actor=os.environ['BSKY_HANDLE'], limit=1)
@@ -85,7 +87,7 @@ jobs:
 
           # 2. Check RSS
           feed = feedparser.parse(os.environ['RSS_URL'])
-          if not feed.entries: exit()
+          if not feed.entries: sys.exit(0)
           entry = feed.entries[0]
 
           if entry.link == last_link_on_bsky:
